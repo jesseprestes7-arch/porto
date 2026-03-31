@@ -180,7 +180,7 @@ input[type="text"] { width: 100%; padding: 10px 12px; border: 0.5px solid rgba(0
 <div class="toast" id="toast"></div>
 <script>
 var CID='452724028434-g0gatanhr9v42nf9ppv09af5g7it1jgs.apps.googleusercontent.com';
-var SCOPES='https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file';
+var SCOPES='https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive';
 var SNAME='Porto Agromineral - Monitoramento';
 var MO=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 var now=new Date();
@@ -244,11 +244,10 @@ function mkSS(){
 }
 
 function addHdr(tn,cb){
-  fetch('https://sheets.googleapis.com/v4/spreadsheets/'+sid+'/values/'+encodeURIComponent(tn+'!A1')+':append?valueInputOption=RAW',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({values:[['#','Data','Hora','Cor','Tipo','Cap.Nom (m³)','Vol.Est (m³)','Intervalo','Status Carga','Cliente','br_seg3']]})})
+  fetch('https://sheets.googleapis.com/v4/spreadsheets/'+sid+'/values/'+encodeURIComponent(tn+'!A1')+':append?valueInputOption=RAW',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({values:[['#','Data','Hora','Cor','Tipo','Cap.Nom (m³)','Vol.Est (m³)','Intervalo','Status Carga','Cliente','br_seg3','Foto']]})})
   .then(function(){if(cb)cb();});
 }
-
-function ensureTab(tn,cb){
+(tn,cb){
   fetch('https://sheets.googleapis.com/v4/spreadsheets/'+sid+'?fields=sheets.properties.title',{headers:{'Authorization':'Bearer '+tok}})
   .then(function(r){return r.json();}).then(function(d){
     var ex=d.sheets&&d.sheets.some(function(s){return s.properties.title===tn;});
@@ -258,21 +257,49 @@ function ensureTab(tn,cb){
   });
 }
 
+function uploadFoto(entry, cb) {
+  if(!entry.th || !tok){cb('');return;}
+  var b64=entry.th.split(',')[1];
+  var mime=entry.th.split(';')[0].split(':')[1]||'image/jpeg';
+  var bin=atob(b64);
+  var arr=new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+  var blob=new Blob([arr],{type:mime});
+  var fname='Porto_'+entry.seq+'_'+entry.data.replace(/\//g,'-')+'_'+entry.hora.replace(':','')+'.jpg';
+  var meta=JSON.stringify({name:fname,parents:['root']});
+  var form=new FormData();
+  form.append('metadata',new Blob([meta],{type:'application/json'}));
+  form.append('file',blob);
+  fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',{method:'POST',headers:{'Authorization':'Bearer '+tok},body:form})
+  .then(function(r){return r.json();}).then(function(d){
+    if(d.id){
+      fetch('https://www.googleapis.com/drive/v3/files/'+d.id+'/permissions',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({role:'reader',type:'anyone'})}).catch(function(){});
+      cb(d.webViewLink||'https://drive.google.com/file/d/'+d.id+'/view');
+    } else cb('');
+  }).catch(function(){cb('');});
+}
+
 function syncPend(){
   if(!tok){toast('Conecte o Google primeiro');return;}
+  if(!sid){ensureSS();return;}
   var pend=entries.filter(function(e){return !e.ok;});
   if(pend.length===0){toast('Tudo sincronizado!');return;}
   var bn=document.getElementById('sbtn'),lb=document.getElementById('slbl');
   bn.className='sync-btn';lb.textContent='Sincronizando...';
   var tn=MO[now.getMonth()]+' '+now.getFullYear();
   ensureTab(tn,function(){
-    var rows=pend.map(function(e){return[e.seq,e.data,e.hora,e.cor,e.tipo,e.capNom,e.vol,'—',e.status,e.cliente||'',e.br];});
-    fetch('https://sheets.googleapis.com/v4/spreadsheets/'+sid+'/values/'+encodeURIComponent(tn+'!A1')+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({values:rows})})
-    .then(function(r){return r.json();}).then(function(){
-      pend.forEach(function(e){e.ok=true;});save();upUI();rdToday();
-      bn.className='sync-btn ok';lb.textContent='Sheets';
-      toast(pend.length+' registros na planilha!');
-    }).catch(function(){bn.className='sync-btn ok';lb.textContent='Sheets';toast('Erro na sincronização',1);});
+    var done=0;
+    pend.forEach(function(e){
+      uploadFoto(e,function(link){
+        e.driveLink=link||'';
+        var row=[e.seq,e.data,e.hora,e.cor,e.tipo,e.capNom,e.vol,'—',e.status,e.cliente||'',e.br,e.driveLink];
+        fetch('https://sheets.googleapis.com/v4/spreadsheets/'+sid+'/values/'+encodeURIComponent(tn+'!A1')+':append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})})
+        .then(function(){
+          e.ok=true;done++;save();upUI();rdToday();
+          if(done===pend.length){bn.className='sync-btn ok';lb.textContent='Sheets';toast(pend.length+' registros + fotos na planilha!');}
+        }).catch(function(){done++;if(done===pend.length){bn.className='sync-btn ok';lb.textContent='Sheets';}});
+      });
+    });
   });
 }
 
